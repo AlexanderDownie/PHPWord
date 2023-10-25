@@ -27,6 +27,7 @@ use PhpOffice\PhpWord\Exception\Exception;
 use PhpOffice\PhpWord\Shared\Text;
 use PhpOffice\PhpWord\Shared\XMLWriter;
 use PhpOffice\PhpWord\Shared\ZipArchive;
+use PhpOffice\PhpWord\Writer\Word2007\Element\AbstractElement;
 use XSLTProcessor;
 
 class TemplateProcessor
@@ -268,6 +269,66 @@ class TemplateProcessor
     }
 
     /**
+     * @param mixed $search
+     * @param mixed $replace  - Link Element
+     * @param int $limit
+     */
+    public function setLinkValue($search,\PhpOffice\PhpWord\Element\Link $linkType, $limit = self::MAXIMUM_REPLACEMENTS_DEFAULT) : void
+    {
+        $elementName = substr(get_class($linkType), strrpos(get_class($linkType), '\\') + 1);
+        if($elementName!="Link")return;
+        $objectClass = 'PhpOffice\\PhpWord\\Writer\\Word2007\\Element\\' . $elementName;
+        $partFileName=$this->getMainPartName();
+        $lnkIndex = $this->getNextRelationsIndex($partFileName);
+        $rid = 'rId' . $lnkIndex;
+        $linkType->setRelationId($lnkIndex - ($linkType->isInSection() ? 6 : 0));
+        // replace preparations
+        $this->addLinkToRelations($partFileName, $rid, $linkType->getSource(), $linkType->isInternal());
+
+        $xmlWriter = new XMLWriter();
+        /** @var AbstractElement $elementWriter */
+        $elementWriter = new $objectClass($xmlWriter, $linkType, true);
+        $elementWriter->write();
+
+        $where = $this->findContainingXmlBlockForMacro($search, 'w:r');
+        $block = $this->getSlice($where['start'], $where['end']);
+        $textParts = $this->splitTextIntoTexts($block);
+        $this->replaceXmlBlock($search, $textParts, 'w:r');
+
+        $search = static::ensureMacroCompleted($search);
+        $this->replaceXmlBlock($search, $xmlWriter->getData(), 'w:r');
+    }
+
+    private function addLinkToRelations($partFileName, $rid, $link, $isInternal) : void
+    {
+        // define templates
+        $relationTpl = '<Relationship Id="{RID}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="{DST}" TargetMode="{TM}"/>';
+        $newRelationsTpl = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n" . '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+        $newRelationsTypeTpl = '<Override PartName="/{RELS}" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>';
+        // get image embed name
+        if (isset($this->tempDocumentNewLinks[$rid])) {
+            $linkName = $this->tempDocumentNewLinks[$rid];
+        } else {
+            // add image to document
+            $linkName = $link;
+            $this->tempDocumentNewLinks[$rid] = $linkName;
+        }
+
+        $xmlLinkRelation = str_replace(array('{RID}', '{DST}', '{TM}'), array($rid, $linkName, $isInternal ? "Internal" : "External"), $relationTpl);
+
+        if (!isset($this->tempDocumentRelations[$partFileName])) {
+            // create new relations file
+            $this->tempDocumentRelations[$partFileName] = $newRelationsTpl;
+            // and add it to content types
+            $xmlRelationsType = str_replace('{RELS}', $this->getRelationsName($partFileName), $newRelationsTypeTpl);
+            $this->tempDocumentContentTypes = str_replace('</Types>', $xmlRelationsType, $this->tempDocumentContentTypes) . '</Types>';
+        }
+
+        // add image to relations
+        $this->tempDocumentRelations[$partFileName] = str_replace('</Relationships>', $xmlLinkRelation, $this->tempDocumentRelations[$partFileName]) . '</Relationships>';
+    }
+
+    /**
      * @param string $search
      * @param \PhpOffice\PhpWord\Element\AbstractElement $complexType
      */
@@ -277,7 +338,7 @@ class TemplateProcessor
         $objectClass = 'PhpOffice\\PhpWord\\Writer\\Word2007\\Element\\' . $elementName;
 
         $xmlWriter = new XMLWriter();
-        /** @var \PhpOffice\PhpWord\Writer\Word2007\Element\AbstractElement $elementWriter */
+        /** @var AbstractElement $elementWriter */
         $elementWriter = new $objectClass($xmlWriter, $complexType, true);
         $elementWriter->write();
 
@@ -305,7 +366,7 @@ class TemplateProcessor
         $objectClass = 'PhpOffice\\PhpWord\\Writer\\Word2007\\Element\\' . $elementName;
 
         $xmlWriter = new XMLWriter();
-        /** @var \PhpOffice\PhpWord\Writer\Word2007\Element\AbstractElement $elementWriter */
+        /** @var AbstractElement $elementWriter */
         $elementWriter = new $objectClass($xmlWriter, $complexType, false);
         $elementWriter->write();
 
